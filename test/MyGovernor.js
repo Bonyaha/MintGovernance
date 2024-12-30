@@ -6,41 +6,21 @@ const { toUtf8Bytes, keccak256, parseEther } = ethers;
 describe("MyGovernor", function () {
   async function deployFixture() {
     const [owner, otherAccount] = await ethers.getSigners();
-    //console.log("Owner:", owner.address);
-  
-    const transactionCount = await owner.provider.getTransactionCount(owner.address);
-    console.log(transactionCount);
-    
-     // gets the address of the token before it is deployed
-     const futureAddress = ethers.getCreateAddress({
-      from: owner.address,
-      nonce: transactionCount + 1
-    });
+    //console.log("Owner:", owner.address);   
 
-
-
-
-
-console.log(futureAddress);
-
-    // Deploy MyToken first
-    /* const MyToken = await ethers.getContractFactory("MyToken");
+   // Deploy MyToken first
+    const MyToken = await ethers.getContractFactory("MyToken");
     const token = await MyToken.deploy(ethers.ZeroAddress); // Updated here
-    await token.waitForDeployment(); // Ensures deployment completion */
+    await token.waitForDeployment(); // Ensures deployment completion
     //console.log("MyToken deployed at:", token.target);
   
     // Deploy MyGovernor with the actual deployed address of MyToken
     const MyGovernor = await ethers.getContractFactory("MyGovernor");
-    const governor = await MyGovernor.deploy(futureAddress);
+    const governor = await MyGovernor.deploy(token.target);
     await governor.waitForDeployment(); // Ensures deployment completion
     //console.log("MyGovernor deployed at:", governor.target);
   
-    //await token.setGovernor(governor.target);
-
-    const MyToken = await ethers.getContractFactory("MyToken");
-    const token = await MyToken.deploy(governor.address); // Updated here
-    await token.waitForDeployment();
-
+    await token.setGovernor(governor.target);
 
     // Delegate tokens to the owner
     await token.delegate(owner.address);

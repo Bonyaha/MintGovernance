@@ -8,8 +8,8 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
 contract MyToken is ERC20, ERC20Permit, ERC20Votes {
     address public governor;
 
-    constructor(address _governor) ERC20("MyToken", "MTK") ERC20Permit("MyToken") {
-        governor = _governor;
+    constructor(address initialGovernor) ERC20("MyToken", "MTK") ERC20Permit("MyToken") {
+        governor = initialGovernor;
         _mint(msg.sender, 10000e18);
     }
 

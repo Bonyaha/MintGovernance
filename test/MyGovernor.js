@@ -20,8 +20,8 @@ describe("MyGovernor", function () {
     await governor.waitForDeployment(); // Ensures deployment completion
     //console.log("MyGovernor deployed at:", governor.target);
   
+    // Update the token's governor address after deployment
     await token.setGovernor(governor.target);
-
     // Delegate tokens to the owner
     await token.delegate(owner.address);
   

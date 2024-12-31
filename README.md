@@ -11,5 +11,6 @@ REPORT_GAS=true npx hardhat test
 npx hardhat node
 npx hardhat run scripts/deploy.js
 ```
-### MyToken deployed at: 0xcc3bE3023053e84baB8E576D8C83B9a7C9C78BD3
-### MyGovernor deployed at: 0xbc23e01687a727c02A8e7bEF0D271f2CC40ed9d0
+### MyToken deployed at: 0xD18dbCF7e018c305b5E293FDC4d235C11bf0Cfeb
+### MyGovernor deployed at: 0xFcf16CBEA0b8A38b5aC1571f53Fb7A6Cbd343030
+### Proposal id: 43299094184922297695527759677995549232058675074474518497860330663067653793646

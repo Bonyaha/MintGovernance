@@ -18,4 +18,7 @@ module.exports = {
       accounts: [process.env.SEPOLIA_PRIVATE_KEY], // Private key of your funded Sepolia account
     },
   },
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_KEY
+  }
 };

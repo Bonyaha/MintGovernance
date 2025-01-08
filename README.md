@@ -84,6 +84,7 @@ The governance system uses the following states for proposals:
 - Wait for the appropriate voting and timelock periods between governance actions
 - Keep track of proposal IDs for voting and execution
 - Make sure your wallet is properly configured in the Hardhat config
+- Make sure you have proper address for MyToken address in constructorArgs.js file (**it's important for verification process**)
 
 ## Troubleshooting
 
@@ -94,7 +95,9 @@ If you encounter errors:
 4. Confirm the proposal is in the correct state for the action you're attempting
 
 
-### MyToken deployed at: 0xD18dbCF7e018c305b5E293FDC4d235C11bf0Cfeb
-### MyGovernor deployed at: 0xFcf16CBEA0b8A38b5aC1571f53Fb7A6Cbd343030
-### Proposal id: 43299094184922297695527759677995549232058675074474518497860330663067653793646
+
+
+#### MyToken deployed at: 0xD18dbCF7e018c305b5E293FDC4d235C11bf0Cfeb
+#### MyGovernor deployed at: 0xFcf16CBEA0b8A38b5aC1571f53Fb7A6Cbd343030
+#### Proposal id: 43299094184922297695527759677995549232058675074474518497860330663067653793646
 

@@ -13,10 +13,9 @@ module.exports = {
     },
   },
   networks: {
-    sepolia: {
-      url: process.env.ALCHEMY_SEPOLIA_URL, // Alchemy or Infura URL for Sepolia
-      accounts: [process.env.SEPOLIA_PRIVATE_KEY], // Private key of your funded Sepolia account
-    },
+    localhost: {
+      url: "http://127.0.0.1:8545/",
+    }
   },
   etherscan: {
     apiKey: process.env.ETHERSCAN_KEY

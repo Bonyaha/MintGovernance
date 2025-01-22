@@ -20,17 +20,16 @@ contract MyGovernor is
     GovernorTimelockControl,
     AccessControl
 {
-    bytes32 public constant PROPOSAL_REVIEWER_ROLE =
-        keccak256("PROPOSAL_REVIEWER_ROLE");
+    bytes32 public constant PROPOSAL_REVIEWER_ROLE = keccak256("PROPOSAL_REVIEWER_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-
+    
     // Mapping to track approved proposal hashes
-    mapping(bytes32 => bool) public approvedProposals;
-
+    mapping(uint256 => bool) public approvedProposals;
+    
     // Events
-    event ProposalApproved(bytes32 proposalHash, address reviewer);
-    event ProposalRejected(bytes32 proposalHash, address reviewer);
-    event ProposalSubmittedForReview(bytes32 proposalHash, address proposer);
+    event ProposalApproved(uint256 proposalId, address reviewer);
+    event ProposalRejected(uint256 proposalId, address reviewer);
+    event ProposalSubmittedForReview(uint256 proposalId, address proposer);
 
     // Struct to store proposal details for review
     struct ProposalDetails {
@@ -43,7 +42,7 @@ contract MyGovernor is
     }
 
     // Mapping to store proposals waiting for review
-    mapping(bytes32 => ProposalDetails) public proposalsAwaitingReview;
+    mapping(uint256 => ProposalDetails) public proposalsAwaitingReview;
 
     constructor(
         IVotes _token,
@@ -55,7 +54,7 @@ contract MyGovernor is
         GovernorVotesQuorumFraction(4)
         GovernorTimelockControl(_timelock)
     {
-        // Setup initial roles
+        // Setup initial roles for RBAC
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
         _setRoleAdmin(PROPOSAL_REVIEWER_ROLE, ADMIN_ROLE);
@@ -68,21 +67,12 @@ contract MyGovernor is
         bytes[] memory calldatas,
         string memory description
     ) external {
-        uint256 proposalId = hashProposal(
-            targets,
-            values,
-            calldatas,
-            keccak256(bytes(description))
-        );
-        bytes32 proposalHash = bytes32(proposalId);
+        uint256 proposalId = hashProposal(targets, values, calldatas, keccak256(bytes(description)));
+        
+        require(!proposalsAwaitingReview[proposalId].exists, "Proposal already submitted for review");
+        require(!approvedProposals[proposalId], "Proposal already approved");
 
-        require(
-            !proposalsAwaitingReview[proposalHash].exists,
-            "Proposal already submitted for review"
-        );
-        require(!approvedProposals[proposalHash], "Proposal already approved");
-
-        proposalsAwaitingReview[proposalHash] = ProposalDetails({
+        proposalsAwaitingReview[proposalId] = ProposalDetails({
             targets: targets,
             values: values,
             calldatas: calldatas,
@@ -91,50 +81,33 @@ contract MyGovernor is
             exists: true
         });
 
-        emit ProposalSubmittedForReview(proposalHash, msg.sender);
+        emit ProposalSubmittedForReview(proposalId, msg.sender);
     }
 
     // Function to approve proposals before they can be voted on
-    function approveProposal(
-        bytes32 proposalHash
-    ) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
-        require(
-            proposalsAwaitingReview[proposalHash].exists,
-            "Proposal not found"
-        );
-        require(!approvedProposals[proposalHash], "Proposal already approved");
-
+    function approveProposal(uint256 proposalId) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
+        require(proposalsAwaitingReview[proposalId].exists, "Proposal not found");
+        require(!approvedProposals[proposalId], "Proposal already approved");
+        
         // Prevent reviewers from approving their own proposals
-        require(
-            proposalsAwaitingReview[proposalHash].proposer != msg.sender,
-            "Cannot approve own proposal"
-        );
+        require(proposalsAwaitingReview[proposalId].proposer != msg.sender, 
+                "Cannot approve own proposal");
 
-        approvedProposals[proposalHash] = true;
-        emit ProposalApproved(proposalHash, msg.sender);
+        approvedProposals[proposalId] = true;
+        emit ProposalApproved(proposalId, msg.sender);
     }
 
     // Function to reject proposals
-    function rejectProposal(
-        bytes32 proposalHash
-    ) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
-        require(
-            proposalsAwaitingReview[proposalHash].exists,
-            "Proposal not found"
-        );
-        require(
-            !approvedProposals[proposalHash],
-            "Cannot reject approved proposal"
-        );
-
+    function rejectProposal(uint256 proposalId) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
+        require(proposalsAwaitingReview[proposalId].exists, "Proposal not found");
+        require(!approvedProposals[proposalId], "Cannot reject approved proposal");
+        
         // Prevent reviewers from rejecting their own proposals
-        require(
-            proposalsAwaitingReview[proposalHash].proposer != msg.sender,
-            "Cannot reject own proposal"
-        );
+        require(proposalsAwaitingReview[proposalId].proposer != msg.sender, 
+                "Cannot reject own proposal");
 
-        delete proposalsAwaitingReview[proposalHash];
-        emit ProposalRejected(proposalHash, msg.sender);
+        delete proposalsAwaitingReview[proposalId];
+        emit ProposalRejected(proposalId, msg.sender);
     }
 
     // Override propose function to require approval for all proposals
@@ -144,36 +117,23 @@ contract MyGovernor is
         bytes[] memory calldatas,
         string memory description
     ) public override returns (uint256) {
-        uint256 proposalId = hashProposal(
-            targets,
-            values,
-            calldatas,
-            keccak256(bytes(description))
-        );
-        bytes32 proposalHash = bytes32(proposalId);
-        require(
-            approvedProposals[proposalHash],
-            "Proposal must be approved by reviewer"
-        );
-
+        uint256 proposalId = hashProposal(targets, values, calldatas, keccak256(bytes(description)));
+        require(approvedProposals[proposalId], "Proposal must be approved by reviewer");
+        
         // Clean up the approved proposal after it's been proposed
-        delete proposalsAwaitingReview[proposalHash];
-        delete approvedProposals[proposalHash];
-
+        delete proposalsAwaitingReview[proposalId];
+        delete approvedProposals[proposalId];
+        
         return super.propose(targets, values, calldatas, description);
     }
 
     // Function to add proposal reviewers
-    function addProposalReviewer(
-        address reviewer
-    ) external onlyRole(ADMIN_ROLE) {
+    function addProposalReviewer(address reviewer) external onlyRole(ADMIN_ROLE) {
         grantRole(PROPOSAL_REVIEWER_ROLE, reviewer);
     }
 
     // Function to remove proposal reviewers
-    function removeProposalReviewer(
-        address reviewer
-    ) external onlyRole(ADMIN_ROLE) {
+    function removeProposalReviewer(address reviewer) external onlyRole(ADMIN_ROLE) {
         revokeRole(PROPOSAL_REVIEWER_ROLE, reviewer);
     }
 
@@ -197,9 +157,7 @@ contract MyGovernor is
         return super.votingPeriod();
     }
 
-    function quorum(
-        uint256 blockNumber
-    )
+    function quorum(uint256 blockNumber)
         public
         view
         override(Governor, GovernorVotesQuorumFraction)
@@ -208,9 +166,7 @@ contract MyGovernor is
         return super.quorum(blockNumber);
     }
 
-    function state(
-        uint256 proposalId
-    )
+    function state(uint256 proposalId)
         public
         view
         override(Governor, GovernorTimelockControl)
@@ -219,9 +175,12 @@ contract MyGovernor is
         return super.state(proposalId);
     }
 
-    function proposalNeedsQueuing(
-        uint256 proposalId
-    ) public view override(Governor, GovernorTimelockControl) returns (bool) {
+    function proposalNeedsQueuing(uint256 proposalId)
+        public
+        view
+        override(Governor, GovernorTimelockControl)
+        returns (bool)
+    {
         return super.proposalNeedsQueuing(proposalId);
     }
 
@@ -241,14 +200,7 @@ contract MyGovernor is
         bytes[] memory calldatas,
         bytes32 descriptionHash
     ) internal override(Governor, GovernorTimelockControl) returns (uint48) {
-        return
-            super._queueOperations(
-                proposalId,
-                targets,
-                values,
-                calldatas,
-                descriptionHash
-            );
+        return super._queueOperations(proposalId, targets, values, calldatas, descriptionHash);
     }
 
     function _executeOperations(
@@ -258,13 +210,7 @@ contract MyGovernor is
         bytes[] memory calldatas,
         bytes32 descriptionHash
     ) internal override(Governor, GovernorTimelockControl) {
-        super._executeOperations(
-            proposalId,
-            targets,
-            values,
-            calldatas,
-            descriptionHash
-        );
+        super._executeOperations(proposalId, targets, values, calldatas, descriptionHash);
     }
 
     function _cancel(
@@ -285,9 +231,7 @@ contract MyGovernor is
         return super._executor();
     }
 
-    function supportsInterface(
-        bytes4 interfaceId
-    )
+    function supportsInterface(bytes4 interfaceId)
         public
         view
         override(Governor, AccessControl)

@@ -92,9 +92,13 @@ describe("MyGovernor", function () {
     return {
       ...deployValues,
       proposalId: actualProposalId,
+      targets: targets,          // Added
+      values: values,            // Added
+      calldatas: calldatas,      // Added
       mintCalldata: calldatas[0],
-      descriptionHash: descriptionHash
-    }
+      descriptionHash: descriptionHash,
+      descriptionText: descriptionText
+    };
   }
 
   // Voted proposal fixture
@@ -233,4 +237,123 @@ describe("MyGovernor", function () {
       ).to.not.be.reverted
     })
   })
+
+  describe("Proposal Workflow Edge Cases", () => {
+    it("should prevent non-reviewers from approving proposals", async () => {
+      const { governor, otherAccount } = await loadFixture(deployFixture)
+      await expect(governor.connect(otherAccount).approveProposal(123))
+        .to.be.revertedWithCustomError(governor, "AccessControlUnauthorizedAccount")
+    })
+
+    it("should reject unapproved proposals", async () => {
+      const { governor, token, otherAccount } = await loadFixture(deployFixture)
+      const calldata = token.interface.encodeFunctionData("mint", [otherAccount.address, 1000])
+      await expect(
+        governor.connect(otherAccount).propose([token.target], [0], [calldata], "Bad proposal")
+      ).to.be.revertedWith("Proposal must be approved by reviewer")
+    });
+  })
+
+  describe("Role Permissions", () => {
+    it("should prevent non-admins from adding reviewers", async () => {
+      const { governor, otherAccount } = await loadFixture(deployFixture)
+      await expect(governor.connect(otherAccount).addProposalReviewer(otherAccount.address))
+        .to.be.revertedWithCustomError(governor, "AccessControlUnauthorizedAccount")
+    });
+  })
+
+  describe("Proposal Re-Submission", () => {
+    describe("Proposal Re-Submission", () => {
+      it("should require re-approval for resubmitted proposals", async function () {
+        const {
+          governor,
+          token,
+          owner,
+          otherAccount,
+          targets,
+          values,
+          calldatas,
+          descriptionText,
+          proposalId
+        } = await loadFixture(proposalFixture)
+
+        // Cast vote on the proposal
+        await governor.castVote(proposalId, 1)
+
+        // Mine some blocks to pass voting period
+        await hre.network.provider.send("evm_mine")
+
+        // Queue the proposal
+        await governor.queue(
+          targets,
+          values,
+          calldatas,
+          keccak256(toUtf8Bytes(descriptionText))
+        )
+
+        // Increase time to pass timelock delay
+        await hre.network.provider.send("evm_increaseTime", [10])
+        await hre.network.provider.send("evm_mine")
+
+        // Execute the first proposal
+        await governor.execute(
+          targets,
+          values,
+          calldatas,
+          keccak256(toUtf8Bytes(descriptionText))
+        )
+
+        // Resubmit with a DIFFERENT description to generate new proposalId
+        const newDescriptionText = "Give the owner more tokens! - Resubmitted"
+        const submitTx = await governor.connect(otherAccount).submitProposalForReview(
+          targets,
+          values,
+          calldatas,
+          newDescriptionText // Different description
+        )
+        await submitTx.wait()
+
+        // Calculate new proposalId with updated description
+        const newProposalId = await governor.hashProposal(
+          targets,
+          values,
+          calldatas,
+          keccak256(toUtf8Bytes(newDescriptionText))
+        )
+
+        // Verify new proposal requires approval
+        expect(await governor.approvedProposals(newProposalId)).to.be.false
+
+        // Attempt to propose without approval should fail
+        await expect(
+          governor.connect(otherAccount).propose(
+            targets,
+            values,
+            calldatas,
+            newDescriptionText
+          )
+        ).to.be.revertedWith("Proposal must be approved by reviewer")
+
+        // Approve and propose should succeed
+        await governor.approveProposal(newProposalId)
+        await expect(
+          governor.connect(otherAccount).propose(
+            targets,
+            values,
+            calldatas,
+            newDescriptionText
+          )
+        ).to.not.be.reverted
+      });
+    });
+  })
+
+  describe("Token Governance", () => {
+    it("should prevent non-governor from minting", async () => {
+      const { token, otherAccount } = await loadFixture(deployFixture)
+      await expect(token.connect(otherAccount).mint(otherAccount.address, 1000))
+        .to.be.revertedWith("Only governor can mint")
+    });
+  })
+
 })

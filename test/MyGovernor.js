@@ -41,31 +41,59 @@ describe("MyGovernor", function () {
   // Proposal creation fixture
   async function proposalFixture() {
     const deployValues = await deployFixture()
-    const { governor, token, owner } = deployValues
+    const { governor, token, owner, otherAccount } = deployValues
 
-    const mintCalldata = token.interface.encodeFunctionData("mint", [owner.address, parseEther("25000")])
+    // Grant owner the proposal reviewer role
+    await governor.addProposalReviewer(owner.address)
+
+    // Prepare proposal data (mint to owner)
+    const targets = [token.target]
+    const values = [0]
+    const calldatas = [token.interface.encodeFunctionData("mint", [owner.address, parseEther("25000")])]
     const descriptionText = "Give the owner more tokens!"
+    const descriptionHash = keccak256(toUtf8Bytes(descriptionText))
 
-    const tx = await governor.propose(
-      [token.target],
-      [0],
-      [mintCalldata],
+    // Submit proposal for review AS OTHER ACCOUNT
+    const submitTx = await governor.connect(otherAccount).submitProposalForReview(
+      targets,
+      values,
+      calldatas,
       descriptionText
     )
+    await submitTx.wait()
 
-    const receipt = await tx.wait()
+    // Calculate proposalId (must match contract logic)
+    const proposalId = await governor.hashProposal(
+      targets,
+      values,
+      calldatas,
+      descriptionHash
+    )
+
+    // Approve the proposal AS OWNER (reviewer)
+    const approveTx = await governor.approveProposal(proposalId)
+    await approveTx.wait()
+
+    // Now propose the approved proposal AS OTHER ACCOUNT
+    const proposeTx = await governor.connect(otherAccount).propose(
+      targets,
+      values,
+      calldatas,
+      descriptionText
+    )
+    const receipt = await proposeTx.wait()
     const proposalCreatedEvent = receipt.logs.find(log =>
       log.fragment && log.fragment.name === 'ProposalCreated'
     )
-    const proposalId = proposalCreatedEvent.args[0].toString()
+    const actualProposalId = proposalCreatedEvent.args[0].toString()
 
     await hre.network.provider.send("evm_mine")
 
     return {
       ...deployValues,
-      proposalId,
-      mintCalldata,
-      descriptionHash: keccak256(toUtf8Bytes(descriptionText))
+      proposalId: actualProposalId,
+      mintCalldata: calldatas[0],
+      descriptionHash: descriptionHash
     }
   }
 

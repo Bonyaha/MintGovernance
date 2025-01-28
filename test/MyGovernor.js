@@ -58,7 +58,8 @@ describe("MyGovernor", function () {
       targets,
       values,
       calldatas,
-      descriptionText
+      descriptionText,
+      0
     )
     await submitTx.wait()
 
@@ -307,7 +308,8 @@ describe("MyGovernor", function () {
         targets,
         values,
         calldatas,
-        newDescriptionText
+        newDescriptionText,
+        0
       )
       await submitTx.wait()
 

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// Compatible with OpenZeppelin Contracts ^5.0.0
 pragma solidity ^0.8.22;
 
 import "@openzeppelin/contracts/governance/Governor.sol";
@@ -10,6 +9,7 @@ import "@openzeppelin/contracts/governance/extensions/GovernorVotesQuorumFractio
 import "@openzeppelin/contracts/governance/TimelockController.sol";
 import "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract MyGovernor is
     Governor,
@@ -18,31 +18,67 @@ contract MyGovernor is
     GovernorVotes,
     GovernorVotesQuorumFraction,
     GovernorTimelockControl,
-    AccessControl
+    AccessControl,
+    ReentrancyGuard
 {
-    bytes32 public constant PROPOSAL_REVIEWER_ROLE = keccak256("PROPOSAL_REVIEWER_ROLE");
+    bytes32 public constant PROPOSAL_REVIEWER_ROLE =
+        keccak256("PROPOSAL_REVIEWER_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    
-    // Mapping to track approved proposal hashes
-    mapping(uint256 => bool) public approvedProposals;
-    
-    // Events
-    event ProposalApproved(uint256 proposalId, address reviewer);
-    event ProposalRejected(uint256 proposalId, address reviewer);
-    event ProposalSubmittedForReview(uint256 proposalId, address proposer);
+    bytes32 public constant TREASURER_ROLE = keccak256("TREASURER_ROLE");
 
-    // Struct to store proposal details for review
+    // Treasury state
+    uint256 public treasuryBalance;
+    uint256 public emergencyMinimumBalance;
+    bool public emergencyPaused;
+
+    // Enhanced delegation tracking
+    mapping(address => address[]) public delegationHistory;
+    mapping(address => uint256) public lastDelegationTimestamp;
+
+    // Dynamic quorum settings
+    uint256 public baseQuorum; // Base quorum percentage (in basis points, e.g., 1000 = 10%)
+    uint256 public participationMultiplier; // Multiplier for participation rate
+
+    // Proposal tracking
+    mapping(uint256 => bool) public approvedProposals;
+    mapping(uint256 => ProposalDetails) public proposalsAwaitingReview;
+    mapping(uint256 => uint256) public proposalBudgets;
+
+    // Events
+    event ProposalApproved(
+        uint256 indexed proposalId,
+        address indexed reviewer
+    );
+    event ProposalRejected(
+        uint256 indexed proposalId,
+        address indexed reviewer
+    );
+    event ProposalSubmittedForReview(
+        uint256 indexed proposalId,
+        address indexed proposer
+    );
+    event DelegationChanged(
+        address indexed delegator,
+        address indexed fromDelegate,
+        address indexed toDelegate
+    );
+    event TreasuryWithdrawal(address indexed to, uint256 amount, string reason);
+    event TreasuryDeposit(address indexed from, uint256 amount);
+    event EmergencyPauseSet(bool isPaused);
+    event QuorumParamsUpdated(
+        uint256 baseQuorum,
+        uint256 participationMultiplier
+    );
+
     struct ProposalDetails {
         address[] targets;
         uint256[] values;
         bytes[] calldatas;
         string description;
         address proposer;
+        uint256 budget;
         bool exists;
     }
-
-    // Mapping to store proposals waiting for review
-    mapping(uint256 => ProposalDetails) public proposalsAwaitingReview;
 
     constructor(
         IVotes _token,
@@ -54,22 +90,122 @@ contract MyGovernor is
         GovernorVotesQuorumFraction(4)
         GovernorTimelockControl(_timelock)
     {
-        // Setup initial roles for RBAC
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(TREASURER_ROLE, msg.sender);
         _setRoleAdmin(PROPOSAL_REVIEWER_ROLE, ADMIN_ROLE);
+        _setRoleAdmin(TREASURER_ROLE, ADMIN_ROLE);
+
+        baseQuorum = 1000; // 10% base quorum
+        participationMultiplier = 100; // 1x multiplier
+        emergencyMinimumBalance = 1 ether; // Set default emergency minimum
     }
 
-    // Function for users to submit proposals for review
+    function addProposalReviewer(
+        address reviewer
+    ) external onlyRole(ADMIN_ROLE) {
+        _grantRole(PROPOSAL_REVIEWER_ROLE, reviewer);
+    }
+
+    // Treasury Management Functions
+    receive() external payable override {
+        treasuryBalance += msg.value;
+        emit TreasuryDeposit(msg.sender, msg.value);
+    }
+
+    function withdrawTreasury(
+        address payable to,
+        uint256 amount,
+        string memory reason
+    ) external onlyRole(TREASURER_ROLE) nonReentrant {
+        require(!emergencyPaused, "Treasury is paused");
+        require(amount <= treasuryBalance, "Insufficient treasury balance");
+        require(
+            treasuryBalance - amount >= emergencyMinimumBalance,
+            "Must maintain minimum balance"
+        );
+
+        treasuryBalance -= amount;
+        (bool success, ) = to.call{value: amount}("");
+        require(success, "Transfer failed");
+
+        emit TreasuryWithdrawal(to, amount, reason);
+    }
+
+    function setEmergencyPause(bool paused) external onlyRole(ADMIN_ROLE) {
+        emergencyPaused = paused;
+        emit EmergencyPauseSet(paused);
+    }
+
+    // Enhanced Delegation Functions
+    function delegateWithTracking(address newDelegate) external {
+        address oldDelegate = IVotes(token()).delegates(msg.sender);
+
+        // Update delegation history
+        delegationHistory[msg.sender].push(newDelegate);
+        lastDelegationTimestamp[msg.sender] = block.timestamp;
+
+        // Perform actual delegation
+        IVotes(token()).delegate(newDelegate);
+
+        emit DelegationChanged(msg.sender, oldDelegate, newDelegate);
+    }
+
+    function getDelegationHistory(
+        address account
+    ) external view returns (address[] memory) {
+        return delegationHistory[account];
+    }
+
+    // Dynamic Quorum Functions
+    function setQuorumParameters(
+        uint256 newBaseQuorum,
+        uint256 newParticipationMultiplier
+    ) external onlyRole(ADMIN_ROLE) {
+        require(newBaseQuorum <= 10000, "Base quorum cannot exceed 100%");
+        baseQuorum = newBaseQuorum;
+        participationMultiplier = newParticipationMultiplier;
+        emit QuorumParamsUpdated(newBaseQuorum, newParticipationMultiplier);
+    }
+
+    function calculateDynamicQuorum(
+        uint256 blockNumber
+    ) public view returns (uint256) {
+        uint256 baseQuorumVotes = (token().getPastTotalSupply(blockNumber) *
+            baseQuorum) / 10000;
+        uint256 participation = _countParticipation(blockNumber);
+        return
+            baseQuorumVotes + ((participation * participationMultiplier) / 100);
+    }
+
+    function _countParticipation(
+        uint256 blockNumber
+    ) internal view returns (uint256) {
+        // This is a simplified version - you might want to implement more sophisticated logic
+        return token().getPastTotalSupply(blockNumber) / 2;
+    }
+
+    // Enhanced Proposal Functions
     function submitProposalForReview(
         address[] memory targets,
         uint256[] memory values,
         bytes[] memory calldatas,
-        string memory description
+        string memory description,
+        uint256 budget
     ) external {
-        uint256 proposalId = hashProposal(targets, values, calldatas, keccak256(bytes(description)));
-        
-        require(!proposalsAwaitingReview[proposalId].exists, "Proposal already submitted for review");
+        require(budget <= treasuryBalance, "Budget exceeds treasury balance");
+
+        uint256 proposalId = hashProposal(
+            targets,
+            values,
+            calldatas,
+            keccak256(bytes(description))
+        );
+
+        require(
+            !proposalsAwaitingReview[proposalId].exists,
+            "Proposal already submitted"
+        );
         require(!approvedProposals[proposalId], "Proposal already approved");
 
         proposalsAwaitingReview[proposalId] = ProposalDetails({
@@ -78,69 +214,63 @@ contract MyGovernor is
             calldatas: calldatas,
             description: description,
             proposer: msg.sender,
+            budget: budget,
             exists: true
         });
 
         emit ProposalSubmittedForReview(proposalId, msg.sender);
     }
 
-    // Function to approve proposals before they can be voted on
-    function approveProposal(uint256 proposalId) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
-        require(proposalsAwaitingReview[proposalId].exists, "Proposal not found");
-        require(!approvedProposals[proposalId], "Proposal already approved");
-        
-        // Prevent reviewers from approving their own proposals
-        require(proposalsAwaitingReview[proposalId].proposer != msg.sender, 
-                "Cannot approve own proposal");
+    function approveProposal(
+        uint256 proposalId
+    ) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
+        require(
+            proposalsAwaitingReview[proposalId].exists,
+            "Proposal not found"
+        );
+        require(!approvedProposals[proposalId], "Already approved");
+        require(
+            proposalsAwaitingReview[proposalId].proposer != msg.sender,
+            "Cannot approve own proposal"
+        );
 
         approvedProposals[proposalId] = true;
+        proposalBudgets[proposalId] = proposalsAwaitingReview[proposalId]
+            .budget;
         emit ProposalApproved(proposalId, msg.sender);
     }
 
-    // Function to reject proposals
-    function rejectProposal(uint256 proposalId) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
-        require(proposalsAwaitingReview[proposalId].exists, "Proposal not found");
-        require(!approvedProposals[proposalId], "Cannot reject approved proposal");
-        
-        // Prevent reviewers from rejecting their own proposals
-        require(proposalsAwaitingReview[proposalId].proposer != msg.sender, 
-                "Cannot reject own proposal");
-
-        delete proposalsAwaitingReview[proposalId];
-        emit ProposalRejected(proposalId, msg.sender);
-    }
-
-    // Override propose function to require approval for all proposals
     function propose(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        string memory description
-    ) public override returns (uint256) {
-        uint256 proposalId = hashProposal(targets, values, calldatas, keccak256(bytes(description)));
-        require(approvedProposals[proposalId], "Proposal must be approved by reviewer");
-        
-        uint256 actualProposalId = super.propose(targets, values, calldatas, description);
+    address[] memory targets,
+    uint256[] memory values,
+    bytes[] memory calldatas,
+    string memory description
+) public override returns (uint256) {
+    uint256 proposalId = hashProposal(targets, values, calldatas, keccak256(bytes(description)));
+    require(approvedProposals[proposalId], "Proposal must be approved by reviewer");
+    
+    uint256 actualProposalId = super.propose(targets, values, calldatas, description);
+    
+    // Clean up
+    delete proposalsAwaitingReview[proposalId];
+    delete approvedProposals[proposalId];
+    
+    return actualProposalId;
+}
 
-        // Clean up the approved proposal after it's been proposed
-        delete proposalsAwaitingReview[proposalId];
-        delete approvedProposals[proposalId];
-        
-        return actualProposalId;
+    // Required overrides
+    function quorum(
+        uint256 blockNumber
+    )
+        public
+        view
+        override(Governor, GovernorVotesQuorumFraction)
+        returns (uint256)
+    {
+        return calculateDynamicQuorum(blockNumber);
     }
 
-    // Function to add proposal reviewers
-    function addProposalReviewer(address reviewer) external onlyRole(ADMIN_ROLE) {
-        grantRole(PROPOSAL_REVIEWER_ROLE, reviewer);
-    }
-
-    // Function to remove proposal reviewers
-    function removeProposalReviewer(address reviewer) external onlyRole(ADMIN_ROLE) {
-        revokeRole(PROPOSAL_REVIEWER_ROLE, reviewer);
-    }
-
-    // The following functions are overrides required by Solidity.
-
+    // Other existing overrides remain the same...
     function votingDelay()
         public
         view
@@ -159,31 +289,15 @@ contract MyGovernor is
         return super.votingPeriod();
     }
 
-    function quorum(uint256 blockNumber)
-        public
-        view
-        override(Governor, GovernorVotesQuorumFraction)
-        returns (uint256)
-    {
-        return super.quorum(blockNumber);
-    }
-
-    function state(uint256 proposalId)
+    function state(
+        uint256 proposalId
+    )
         public
         view
         override(Governor, GovernorTimelockControl)
         returns (ProposalState)
     {
         return super.state(proposalId);
-    }
-
-    function proposalNeedsQueuing(uint256 proposalId)
-        public
-        view
-        override(Governor, GovernorTimelockControl)
-        returns (bool)
-    {
-        return super.proposalNeedsQueuing(proposalId);
     }
 
     function proposalThreshold()
@@ -202,7 +316,14 @@ contract MyGovernor is
         bytes[] memory calldatas,
         bytes32 descriptionHash
     ) internal override(Governor, GovernorTimelockControl) returns (uint48) {
-        return super._queueOperations(proposalId, targets, values, calldatas, descriptionHash);
+        return
+            super._queueOperations(
+                proposalId,
+                targets,
+                values,
+                calldatas,
+                descriptionHash
+            );
     }
 
     function _executeOperations(
@@ -212,7 +333,13 @@ contract MyGovernor is
         bytes[] memory calldatas,
         bytes32 descriptionHash
     ) internal override(Governor, GovernorTimelockControl) {
-        super._executeOperations(proposalId, targets, values, calldatas, descriptionHash);
+        super._executeOperations(
+            proposalId,
+            targets,
+            values,
+            calldatas,
+            descriptionHash
+        );
     }
 
     function _cancel(
@@ -233,12 +360,15 @@ contract MyGovernor is
         return super._executor();
     }
 
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(Governor, AccessControl)
-        returns (bool)
-    {
+    function proposalNeedsQueuing(
+        uint256 proposalId
+    ) public view override(Governor, GovernorTimelockControl) returns (bool) {
+        return super.proposalNeedsQueuing(proposalId);
+    }
+
+    function supportsInterface(
+        bytes4 interfaceId
+    ) public view override(Governor, AccessControl) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
 }

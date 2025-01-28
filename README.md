@@ -1,5 +1,5 @@
 # ERC20 Governor Project
-## this branch has following additions: RBAC(role-based access control)
+### this branch has following additions: vote delegation tracking, flexible quorum settings, and treasury management
 This repository contains a governance system built with OpenZeppelin's Governor contracts. Below are instructions for deploying, testing, and interacting with the governance system.
 
 In this repository, you'll find two contracts:

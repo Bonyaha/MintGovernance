@@ -92,13 +92,13 @@ describe("MyGovernor", function () {
     return {
       ...deployValues,
       proposalId: actualProposalId,
-      targets: targets,          // Added
-      values: values,            // Added
-      calldatas: calldatas,      // Added
+      targets,
+      values,
+      calldatas,
       mintCalldata: calldatas[0],
-      descriptionHash: descriptionHash,
-      descriptionText: descriptionText
-    };
+      descriptionHash,
+      descriptionText
+    }
   }
 
   // Voted proposal fixture
@@ -128,63 +128,22 @@ describe("MyGovernor", function () {
   }
 
   // Basic setup tests
-  it("should integrate with TimelockController correctly", async () => {
-    const { timelock, governor, token, owner } = await loadFixture(deployFixture)
+  describe("Initial Setup", () => {
+    it("should integrate with TimelockController correctly", async () => {
+      const { timelock, governor, token, owner } = await loadFixture(deployFixture)
 
-    assert.equal(await timelock.hasRole(timelock.PROPOSER_ROLE(), governor.target), true)
-    assert.equal(await timelock.hasRole(timelock.EXECUTOR_ROLE(), ethers.ZeroAddress), true)
-    assert.equal(await token.balanceOf(owner.address), parseEther("10000"))
-  })
-
-  it("should provide the owner with a starting balance", async () => {
-    const { token, owner } = await loadFixture(deployFixture)
-    assert.equal(await token.balanceOf(owner.address), parseEther("10000"))
-  })
-
-  // Proposal lifecycle tests
-  describe("Proposal Lifecycle", () => {
-    it("should set the initial state of the proposal", async () => {
-      const { governor, proposalId } = await loadFixture(proposalFixture)
-      assert.equal(await governor.state(proposalId), 0)
+      assert.equal(await timelock.hasRole(timelock.PROPOSER_ROLE(), governor.target), true)
+      assert.equal(await timelock.hasRole(timelock.EXECUTOR_ROLE(), ethers.ZeroAddress), true)
+      assert.equal(await token.balanceOf(owner.address), parseEther("10000"))
     })
 
-    describe("after voting", () => {
-      it("should have set the vote correctly", async () => {
-        const { voteCastEvent, owner } = await loadFixture(votedProposalFixture)
-        assert.equal(voteCastEvent.args.voter, owner.address)
-        assert.equal(voteCastEvent.args.weight.toString(), parseEther("10000").toString())
-      })
-
-      it("should not allow executing before timelock delay", async () => {
-        const { governor, token, mintCalldata, descriptionHash } = await loadFixture(votedProposalFixture)
-
-        await expect(governor.execute(
-          [token.target],
-          [0],
-          [mintCalldata],
-          descriptionHash
-        )).to.be.reverted
-      })
-
-      it("should allow executing after timelock delay", async () => {
-        const { governor, token, owner, mintCalldata, descriptionHash } = await loadFixture(votedProposalFixture)
-
-        await hre.network.provider.send("evm_increaseTime", [10])
-        await hre.network.provider.send("evm_mine")
-
-        await governor.execute(
-          [token.target],
-          [0],
-          [mintCalldata],
-          descriptionHash
-        )
-
-        assert.equal(await token.balanceOf(owner.address), parseEther("35000"))
-      })
+    it("should provide the owner with a starting balance", async () => {
+      const { token, owner } = await loadFixture(deployFixture)
+      assert.equal(await token.balanceOf(owner.address), parseEther("10000"))
     })
   })
 
-  // Access control tests
+  // Role-based Access Control tests
   describe("Role-based Access Control", () => {
     it("should verify governor contract is the only proposer", async () => {
       const { timelock, governor } = await loadFixture(deployFixture)
@@ -220,25 +179,75 @@ describe("MyGovernor", function () {
       ).to.be.reverted
     })
 
-    it("should allow anyone to execute queued proposals", async () => {
-      const { governor, token, otherAccount, mintCalldata, descriptionHash } = await loadFixture(votedProposalFixture)
+    it("should prevent non-admins from adding reviewers", async () => {
+      const { governor, otherAccount } = await loadFixture(deployFixture)
+      await expect(governor.connect(otherAccount).addProposalReviewer(otherAccount.address))
+        .to.be.revertedWithCustomError(governor, "AccessControlUnauthorizedAccount")
+    })
+  })
 
-      await hre.network.provider.send("evm_increaseTime", [10])
-      await hre.network.provider.send("evm_mine")
+  // Proposal Lifecycle tests
+  describe("Proposal Lifecycle", () => {
+    it("should set the initial state of the proposal", async () => {
+      const { governor, proposalId } = await loadFixture(proposalFixture)
+      assert.equal(await governor.state(proposalId), 0)
+    })
 
-      const governorAsOther = governor.connect(otherAccount)
-      await expect(
-        governorAsOther.execute(
+    describe("Voting Process", () => {
+      it("should have set the vote correctly", async () => {
+        const { voteCastEvent, owner } = await loadFixture(votedProposalFixture)
+        assert.equal(voteCastEvent.args.voter, owner.address)
+        assert.equal(voteCastEvent.args.weight.toString(), parseEther("10000").toString())
+      })
+
+      it("should not allow executing before timelock delay", async () => {
+        const { governor, token, mintCalldata, descriptionHash } = await loadFixture(votedProposalFixture)
+
+        await expect(governor.execute(
+          [token.target],
+          [0],
+          [mintCalldata],
+          descriptionHash
+        )).to.be.reverted
+      })
+
+      it("should allow executing after timelock delay", async () => {
+        const { governor, token, owner, mintCalldata, descriptionHash } = await loadFixture(votedProposalFixture)
+
+        await hre.network.provider.send("evm_increaseTime", [10])
+        await hre.network.provider.send("evm_mine")
+
+        await governor.execute(
           [token.target],
           [0],
           [mintCalldata],
           descriptionHash
         )
-      ).to.not.be.reverted
+
+        assert.equal(await token.balanceOf(owner.address), parseEther("35000"))
+      })
+
+      it("should allow anyone to execute queued proposals", async () => {
+        const { governor, token, otherAccount, mintCalldata, descriptionHash } = await loadFixture(votedProposalFixture)
+
+        await hre.network.provider.send("evm_increaseTime", [10])
+        await hre.network.provider.send("evm_mine")
+
+        const governorAsOther = governor.connect(otherAccount)
+        await expect(
+          governorAsOther.execute(
+            [token.target],
+            [0],
+            [mintCalldata],
+            descriptionHash
+          )
+        ).to.not.be.reverted
+      })
     })
   })
 
-  describe("Proposal Workflow Edge Cases", () => {
+  // Proposal Review Process tests
+  describe("Proposal Review Process", () => {
     it("should prevent non-reviewers from approving proposals", async () => {
       const { governor, otherAccount } = await loadFixture(deployFixture)
       await expect(governor.connect(otherAccount).approveProposal(123))
@@ -251,109 +260,97 @@ describe("MyGovernor", function () {
       await expect(
         governor.connect(otherAccount).propose([token.target], [0], [calldata], "Bad proposal")
       ).to.be.revertedWith("Proposal must be approved by reviewer")
-    });
+    })
+
+    it("should require re-approval for resubmitted proposals", async function () {
+      const {
+        governor,
+        token,
+        owner,
+        otherAccount,
+        targets,
+        values,
+        calldatas,
+        descriptionText,
+        proposalId
+      } = await loadFixture(proposalFixture)
+
+      // Cast vote on the proposal
+      await governor.castVote(proposalId, 1)
+
+      // Mine some blocks to pass voting period
+      await hre.network.provider.send("evm_mine")
+
+      // Queue the proposal
+      await governor.queue(
+        targets,
+        values,
+        calldatas,
+        keccak256(toUtf8Bytes(descriptionText))
+      )
+
+      // Increase time to pass timelock delay
+      await hre.network.provider.send("evm_increaseTime", [10])
+      await hre.network.provider.send("evm_mine")
+
+      // Execute the first proposal
+      await governor.execute(
+        targets,
+        values,
+        calldatas,
+        keccak256(toUtf8Bytes(descriptionText))
+      )
+
+      // Resubmit with a DIFFERENT description
+      const newDescriptionText = "Give the owner more tokens! - Resubmitted"
+      const submitTx = await governor.connect(otherAccount).submitProposalForReview(
+        targets,
+        values,
+        calldatas,
+        newDescriptionText
+      )
+      await submitTx.wait()
+
+      // Calculate new proposalId
+      const newProposalId = await governor.hashProposal(
+        targets,
+        values,
+        calldatas,
+        keccak256(toUtf8Bytes(newDescriptionText))
+      )
+
+      // Verify new proposal requires approval
+      expect(await governor.approvedProposals(newProposalId)).to.be.false
+
+      // Attempt to propose without approval should fail
+      await expect(
+        governor.connect(otherAccount).propose(
+          targets,
+          values,
+          calldatas,
+          newDescriptionText
+        )
+      ).to.be.revertedWith("Proposal must be approved by reviewer")
+
+      // Approve and propose should succeed
+      await governor.approveProposal(newProposalId)
+      await expect(
+        governor.connect(otherAccount).propose(
+          targets,
+          values,
+          calldatas,
+          newDescriptionText
+        )
+      ).to.not.be.reverted
+    })
   })
 
-  describe("Role Permissions", () => {
-    it("should prevent non-admins from adding reviewers", async () => {
-      const { governor, otherAccount } = await loadFixture(deployFixture)
-      await expect(governor.connect(otherAccount).addProposalReviewer(otherAccount.address))
-        .to.be.revertedWithCustomError(governor, "AccessControlUnauthorizedAccount")
-    });
-  })
-
-  describe("Proposal Re-Submission", () => {
-    describe("Proposal Re-Submission", () => {
-      it("should require re-approval for resubmitted proposals", async function () {
-        const {
-          governor,
-          token,
-          owner,
-          otherAccount,
-          targets,
-          values,
-          calldatas,
-          descriptionText,
-          proposalId
-        } = await loadFixture(proposalFixture)
-
-        // Cast vote on the proposal
-        await governor.castVote(proposalId, 1)
-
-        // Mine some blocks to pass voting period
-        await hre.network.provider.send("evm_mine")
-
-        // Queue the proposal
-        await governor.queue(
-          targets,
-          values,
-          calldatas,
-          keccak256(toUtf8Bytes(descriptionText))
-        )
-
-        // Increase time to pass timelock delay
-        await hre.network.provider.send("evm_increaseTime", [10])
-        await hre.network.provider.send("evm_mine")
-
-        // Execute the first proposal
-        await governor.execute(
-          targets,
-          values,
-          calldatas,
-          keccak256(toUtf8Bytes(descriptionText))
-        )
-
-        // Resubmit with a DIFFERENT description to generate new proposalId
-        const newDescriptionText = "Give the owner more tokens! - Resubmitted"
-        const submitTx = await governor.connect(otherAccount).submitProposalForReview(
-          targets,
-          values,
-          calldatas,
-          newDescriptionText // Different description
-        )
-        await submitTx.wait()
-
-        // Calculate new proposalId with updated description
-        const newProposalId = await governor.hashProposal(
-          targets,
-          values,
-          calldatas,
-          keccak256(toUtf8Bytes(newDescriptionText))
-        )
-
-        // Verify new proposal requires approval
-        expect(await governor.approvedProposals(newProposalId)).to.be.false
-
-        // Attempt to propose without approval should fail
-        await expect(
-          governor.connect(otherAccount).propose(
-            targets,
-            values,
-            calldatas,
-            newDescriptionText
-          )
-        ).to.be.revertedWith("Proposal must be approved by reviewer")
-
-        // Approve and propose should succeed
-        await governor.approveProposal(newProposalId)
-        await expect(
-          governor.connect(otherAccount).propose(
-            targets,
-            values,
-            calldatas,
-            newDescriptionText
-          )
-        ).to.not.be.reverted
-      });
-    });
-  })
-
+  // Token Governance tests
   describe("Token Governance", () => {
     it("should prevent non-governor from minting", async () => {
       const { token, otherAccount } = await loadFixture(deployFixture)
       await expect(token.connect(otherAccount).mint(otherAccount.address, 1000))
         .to.be.revertedWith("Only governor can mint")
-    });
+    })
   })
-
 })

@@ -120,11 +120,13 @@ contract MyGovernor is
         uint256 proposalId = hashProposal(targets, values, calldatas, keccak256(bytes(description)));
         require(approvedProposals[proposalId], "Proposal must be approved by reviewer");
         
+        uint256 actualProposalId = super.propose(targets, values, calldatas, description);
+
         // Clean up the approved proposal after it's been proposed
         delete proposalsAwaitingReview[proposalId];
         delete approvedProposals[proposalId];
         
-        return super.propose(targets, values, calldatas, description);
+        return actualProposalId;
     }
 
     // Function to add proposal reviewers

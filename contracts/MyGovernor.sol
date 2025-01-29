@@ -39,10 +39,30 @@ contract MyGovernor is
     uint256 public baseQuorum; // Base quorum percentage (in basis points, e.g., 1000 = 10%)
     uint256 public participationMultiplier; // Multiplier for participation rate
 
-    // Proposal tracking
+    // Enhanced proposal tracking
+    struct ProposalMetadata {
+        string title;
+        string description;
+        address proposer;
+        uint256 timestamp;
+        string status;
+    }
+
+    mapping(uint256 => ProposalMetadata) public proposalMetadata;
     mapping(uint256 => bool) public approvedProposals;
     mapping(uint256 => ProposalDetails) public proposalsAwaitingReview;
     mapping(uint256 => uint256) public proposalBudgets;
+    uint256 public totalProposals;
+
+    struct ProposalDetails {
+        address[] targets;
+        uint256[] values;
+        bytes[] calldatas;
+        string description;
+        address proposer;
+        uint256 budget;
+        bool exists;
+    }
 
     // Events
     event ProposalApproved(
@@ -69,16 +89,6 @@ contract MyGovernor is
         uint256 baseQuorum,
         uint256 participationMultiplier
     );
-
-    struct ProposalDetails {
-        address[] targets;
-        uint256[] values;
-        bytes[] calldatas;
-        string description;
-        address proposer;
-        uint256 budget;
-        bool exists;
-    }
 
     constructor(
         IVotes _token,
@@ -187,6 +197,7 @@ contract MyGovernor is
 
     // Enhanced Proposal Functions
     function submitProposalForReview(
+        string memory title,
         address[] memory targets,
         uint256[] memory values,
         bytes[] memory calldatas,
@@ -208,6 +219,14 @@ contract MyGovernor is
         );
         require(!approvedProposals[proposalId], "Proposal already approved");
 
+        proposalMetadata[proposalId] = ProposalMetadata({
+            title: title,
+            description: description,
+            proposer: msg.sender,
+            timestamp: block.timestamp,
+            status: "Under Review"
+        });
+
         proposalsAwaitingReview[proposalId] = ProposalDetails({
             targets: targets,
             values: values,
@@ -218,6 +237,7 @@ contract MyGovernor is
             exists: true
         });
 
+        totalProposals++;
         emit ProposalSubmittedForReview(proposalId, msg.sender);
     }
 
@@ -241,21 +261,54 @@ contract MyGovernor is
     }
 
     function propose(
-    address[] memory targets,
-    uint256[] memory values,
-    bytes[] memory calldatas,
-    string memory description
-) public override returns (uint256) {
-    uint256 proposalId = hashProposal(targets, values, calldatas, keccak256(bytes(description)));
-    require(approvedProposals[proposalId], "Proposal must be approved by reviewer");
-    
-    uint256 actualProposalId = super.propose(targets, values, calldatas, description);
-    
-    // Clean up
-    delete proposalsAwaitingReview[proposalId];
-    delete approvedProposals[proposalId];
-    
-    return actualProposalId;
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        string memory description
+    ) public override returns (uint256) {
+        uint256 proposalId = hashProposal(
+            targets,
+            values,
+            calldatas,
+            keccak256(bytes(description))
+        );
+        require(
+            approvedProposals[proposalId],
+            "Proposal must be approved by reviewer"
+        );
+
+        uint256 actualProposalId = super.propose(
+            targets,
+            values,
+            calldatas,
+            description
+        );
+
+        // Clean up
+        delete proposalsAwaitingReview[proposalId];
+        delete approvedProposals[proposalId];
+
+        return actualProposalId;
+    }
+
+    // Get active proposals
+    function getActiveProposals() external view returns (uint256[] memory) {
+        // This is a simplified version - you might want to enhance this based on your needs
+        return new uint256[](totalProposals);
+    }
+
+    // Get total number of eligible voters
+    function getEligibleVotersCount() external view returns (uint256) {
+        return IVotes(token()).getPastTotalSupply(block.number - 1);
+    }
+
+    // Check if address has voted on proposal
+    // Fix the override for hasVoted by specifying all parent contracts
+function hasVoted(
+    uint256 proposalId,
+    address account
+) public view override(IGovernor, GovernorCountingSimple) returns (bool) {
+    return super.hasVoted(proposalId, account);
 }
 
     // Required overrides
@@ -270,7 +323,6 @@ contract MyGovernor is
         return calculateDynamicQuorum(blockNumber);
     }
 
-    // Other existing overrides remain the same...
     function votingDelay()
         public
         view

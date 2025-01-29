@@ -55,6 +55,7 @@ describe("MyGovernor", function () {
 
     // Submit proposal for review AS OTHER ACCOUNT
     const submitTx = await governor.connect(otherAccount).submitProposalForReview(
+      "Initial Proposal",
       targets,
       values,
       calldatas,
@@ -305,6 +306,7 @@ describe("MyGovernor", function () {
       // Resubmit with a DIFFERENT description
       const newDescriptionText = "Give the owner more tokens! - Resubmitted"
       const submitTx = await governor.connect(otherAccount).submitProposalForReview(
+        "Resubmitted Proposal",
         targets,
         values,
         calldatas,

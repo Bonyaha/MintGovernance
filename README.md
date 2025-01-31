@@ -1,5 +1,5 @@
 # ERC20 Governor Project
-size is over the limit
+Splitting into multiple files
 #### this branch has following additions: added new events for real-time updates,improved Data Structures,new View Functions,frontend Support Features, added mappings for filtered access
 This repository contains a governance system built with OpenZeppelin's Governor contracts. Below are instructions for deploying, testing, and interacting with the governance system.
 

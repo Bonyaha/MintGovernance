@@ -59,16 +59,6 @@ abstract contract MyGovernorBase is
         bool hasMore;
     }
 
-    struct ProposalDetails {
-        address[] targets;
-        uint256[] values;
-        bytes[] calldatas;
-        string description;
-        address proposer;
-        uint256 budget;
-        bool exists;
-    }
-
     // State variables
     TreasuryState public treasuryState;
     mapping(address => address[]) public delegationHistory;
@@ -78,8 +68,7 @@ abstract contract MyGovernorBase is
     uint256 public participationMultiplier;
 
     mapping(uint256 => ProposalMetadata) public proposalMetadata;
-    mapping(uint256 => bool) public approvedProposals;
-    mapping(uint256 => ProposalDetails) public proposalsAwaitingReview;
+    mapping(uint256 => bool) public approvedProposals;    
     mapping(uint256 => uint256) public proposalBudgets;
     mapping(string => uint256[]) public proposalsByCategory;
     mapping(address => uint256[]) public userProposals;

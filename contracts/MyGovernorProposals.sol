@@ -2,162 +2,83 @@
 pragma solidity ^0.8.22;
 
 import "./MyGovernorTreasury.sol";
+import "./libraries/GovernorLibrary.sol";
 
 contract MyGovernorProposals is MyGovernorTreasury {
-constructor(
+    using GovernorLibrary for *;
+
+error InvalidProposal();
+
+    struct CompactProposalDetails {
+        address proposer;
+        uint96 budget;
+        bool exists;
+        address[] targets;
+        uint256[] values;
+        bytes[] calldatas;
+    }
+
+    mapping(uint256 => CompactProposalDetails) private proposalsAwaitingReview;
+    mapping(uint256 => string) private proposalDescriptions;
+
+    constructor(
         IVotes _token,
         TimelockController _timelock
-    ) MyGovernorTreasury(_token, _timelock) {
-    }
-    // User-friendly proposal retrieval methods
-    function getProposalsByPage(
-        uint256 page,
-        uint256 pageSize
-    ) external view returns (ProposalPage memory) {
-        uint256 startIndex = page * pageSize;
-        uint256 endIndex = startIndex + pageSize;
-        if (endIndex > totalProposals) {
-            endIndex = totalProposals;
-        }
+    ) MyGovernorTreasury(_token, _timelock) {}
 
-        uint256[] memory ids = new uint256[](endIndex - startIndex);
-        ProposalMetadata[] memory metas = new ProposalMetadata[](
-            endIndex - startIndex
+    // Simplified getProposalsByPage with minimal parameters
+    function getProposalsByPage(uint256 page) external view returns (GovernorLibrary.ProposalPage memory) {
+        return GovernorLibrary.getProposalsPage(
+            page,
+            PROPOSALS_PER_PAGE,
+            totalProposals,
+            proposalMetadata
         );
-
-        for (uint256 i = startIndex; i < endIndex; i++) {
-            ids[i - startIndex] = i + 1; // Assuming proposal IDs start from 1
-            metas[i - startIndex] = proposalMetadata[ids[i - startIndex]];
-        }
-
-        return
-            ProposalPage({
-                proposalIds: ids,
-                metadata: metas,
-                totalCount: totalProposals,
-                hasMore: endIndex < totalProposals
-            });
     }
 
-    function getProposalsByCategory(
-        string calldata category,
-        uint256 page
-    ) external view returns (ProposalPage memory) {
+    // Simplified getProposalsByCategory with minimal parameters
+    function getProposalsByCategory(string calldata category) external view returns (GovernorLibrary.ProposalPage memory) {
         if (!isValidCategory[category]) revert InvalidCategory();
-        uint256[] storage categoryProposals = proposalsByCategory[category];
-
-        uint256 startIndex = page * PROPOSALS_PER_PAGE;
-        uint256 endIndex = startIndex + PROPOSALS_PER_PAGE;
-        if (endIndex > categoryProposals.length) {
-            endIndex = categoryProposals.length;
-        }
-
-        uint256[] memory ids = new uint256[](endIndex - startIndex);
-        ProposalMetadata[] memory metas = new ProposalMetadata[](
-            endIndex - startIndex
-        );
-
-        for (uint256 i = startIndex; i < endIndex; i++) {
-            ids[i - startIndex] = categoryProposals[i];
-            metas[i - startIndex] = proposalMetadata[categoryProposals[i]];
-        }
-
-        return
-            ProposalPage({
-                proposalIds: ids,
-                metadata: metas,
-                totalCount: categoryProposals.length,
-                hasMore: endIndex < categoryProposals.length
-            });
-    }
-
-    function getUserVotingInfo(
-        address user
-    )
-        external
-        view
-        returns (
-            uint256 votingPower,
-            uint256 delegatedPower,
-            address[] memory delegators,
-            uint256 proposalsVoted
-        )
-    {
-        votingPower = IVotes(token()).getVotes(user);
-        uint256 voted = 0;
-        for (uint256 i = 1; i <= totalProposals; i++) {
-            if (hasVotedOnProposal[user][i]) {
-                voted++;
-            }
-        }
-        return (
-            votingPower,
-            0, // Delegated power calculation would need additional tracking
-            new address[](0), // Delegators list would need additional tracking
-            voted
+        return GovernorLibrary.getCategoryProposals(
+            category,
+            0,
+            PROPOSALS_PER_PAGE,
+            proposalsByCategory,
+            proposalMetadata
         );
     }
 
-    function getProposalVotes(
-        uint256 proposalId
-    )
-        external
-        view
-        returns (
-            uint256 forVotes,
-            uint256 againstVotes,
-            uint256 abstainVotes,
-            uint256 voterCount
-        )
-    {
-        ProposalMetadata storage metadata = proposalMetadata[proposalId];
-        return (
-            metadata.votesFor,
-            metadata.votesAgainst,
-            metadata.votesAbstain,
-            proposalVoterCount[proposalId]
-        );
-    }
-
-    // Proposal Submission and Management Methods
     function submitProposal(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        string memory description,
-        string memory category,
-        uint256 budget
+        address[] calldata targets,
+        uint256[] calldata values,
+        bytes[] calldata calldatas,
+        string calldata description,
+        string calldata category,
+        uint96 budget  // Changed to uint96
     ) external returns (uint256) {
-        // Validate category
         if (!isValidCategory[category]) revert InvalidCategory();
+        if (budget > treasuryState.balance) revert BudgetExceeded();
 
-        // Create a new proposal
-        uint256 proposalId = totalProposals + 1;
-        totalProposals++;
+        uint256 proposalId = ++totalProposals;
 
-        // Store proposal details
-        proposalsAwaitingReview[proposalId] = ProposalDetails({
-            targets: targets,
-            values: values,
-            calldatas: calldatas,
-            description: description,
+        proposalsAwaitingReview[proposalId] = CompactProposalDetails({
             proposer: msg.sender,
             budget: budget,
-            exists: true
+            exists: true,
+            targets: targets,
+            values: values,
+            calldatas: calldatas
         });
+        proposalDescriptions[proposalId] = description;
 
-        // Track user's proposals
         userProposals[msg.sender].push(proposalId);
-
-        // Categorize proposal
         proposalsByCategory[category].push(proposalId);
 
-        // Create proposal metadata
         proposalMetadata[proposalId] = ProposalMetadata({
-            title: _extractTitle(description),
+            title: GovernorLibrary.extractTitle(description),
             proposer: msg.sender,
             timestamp: uint40(block.timestamp),
-            status: "Pending Review",
+            status: "Pending",
             category: category,
             votesFor: 0,
             votesAgainst: 0,
@@ -169,176 +90,57 @@ constructor(
         return proposalId;
     }
 
-    function reviewProposal(
-        uint256 proposalId,
-        bool approve
-    ) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
-        if (!proposalsAwaitingReview[proposalId].exists) {
-            revert("Proposal does not exist");
-        }
-
+    function reviewProposal(uint256 proposalId, bool approve) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
+        CompactProposalDetails storage proposal = proposalsAwaitingReview[proposalId];
+        if (!proposal.exists) revert InvalidProposal();
+        
         if (approve) {
-            // Check budget constraints
-            uint256 budget = proposalsAwaitingReview[proposalId].budget;
-            if (budget > treasuryState.balance) revert BudgetExceeded();
-
-            // Mark proposal as approved
+            if (proposal.budget > treasuryState.balance) revert BudgetExceeded();
             approvedProposals[proposalId] = true;
             proposalMetadata[proposalId].status = "Approved";
-
             emit ProposalApproved(proposalId, msg.sender);
         } else {
-            // Reject the proposal
             delete proposalsAwaitingReview[proposalId];
+            delete proposalDescriptions[proposalId];
             proposalMetadata[proposalId].status = "Rejected";
             proposalMetadata[proposalId].isActive = false;
-
             emit ProposalRejected(proposalId, msg.sender);
         }
     }
 
-    function updateProposalCategory(
-        uint256 proposalId,
-        string calldata newCategory
-    ) external onlyRole(PROPOSAL_REVIEWER_ROLE) {
-        if (!isValidCategory[newCategory]) revert InvalidCategory();
-
-        // Remove from old category
-        string memory oldCategory = proposalMetadata[proposalId].category;
-        uint256[] storage oldCategoryProposals = proposalsByCategory[oldCategory];
-        for (uint256 i = 0; i < oldCategoryProposals.length; i++) {
-            if (oldCategoryProposals[i] == proposalId) {
-                oldCategoryProposals[i] = oldCategoryProposals[oldCategoryProposals.length - 1];
-                oldCategoryProposals.pop();
-                break;
-            }
-        }
-
-        // Add to new category
-        proposalsByCategory[newCategory].push(proposalId);
-        proposalMetadata[proposalId].category = newCategory;
-
-        emit ProposalCategoryUpdated(proposalId, newCategory);
-    }
-
-    // Internal helper to extract title from description
+    // Optimized _extractTitle function
     function _extractTitle(string memory description) internal pure returns (string memory) {
         bytes memory descBytes = bytes(description);
-        bytes memory titleBytes = new bytes(descBytes.length);
-        uint256 titleLength = 0;
-
-        // Extract first line as title
-        for (uint256 i = 0; i < descBytes.length; i++) {
-            if (descBytes[i] == '\n') break;
-            titleBytes[titleLength] = descBytes[i];
-            titleLength++;
+        uint256 len = descBytes.length;
+        for (uint256 i = 0; i < len; i++) {
+            if (descBytes[i] == 0x0A) {
+                bytes memory titleBytes = new bytes(i);
+                for (uint256 j = 0; j < i; j++) {
+                    titleBytes[j] = descBytes[j];
+                }
+                return string(titleBytes);
+            }
         }
-
-        // Trim the title
-        assembly {
-            mstore(titleBytes, titleLength)
-        }
-
-        return string(titleBytes);
+        return description;
     }
 
-    // Placeholder implementation for required override methods
-    function quorum(uint256 blockNumber) public view override returns (uint256) {
-        return calculateDynamicQuorum(blockNumber);
-    }
-
-    function votingDelay() public pure override returns (uint256) {
-        return 1; // blocks
-    }
-
-    function votingPeriod() public pure override returns (uint256) {
-        return 1; // blocks
-    }
-
-    function state(uint256 proposalId) public view override returns (ProposalState) {
-        // Basic state management - this would need more complex logic in a real implementation
-        if (!proposalMetadata[proposalId].isActive) return ProposalState.Canceled;
-        if (!approvedProposals[proposalId]) return ProposalState.Pending;
-        return ProposalState.Active;
-    }
-
-    function proposalThreshold() public pure override returns (uint256) {
-        return 0; // No threshold for proposal submission
-    }
-
-    function hasVoted(uint256 proposalId, address account) public view override returns (bool) {
-        return hasVotedOnProposal[account][proposalId];
-    }
-
-    // Placeholder implementation of abstract methods from base contract
     function _countVote(
         uint256 proposalId,
         address account,
         uint8 support,
         uint256 weight,
-        bytes memory /* params */
-    ) internal virtual override returns (uint256) {
-        // Track voting details
-        ProposalMetadata storage metadata = proposalMetadata[proposalId];
-        
+        bytes memory
+    ) internal override returns (uint256) {
         if (!hasVotedOnProposal[account][proposalId]) {
             proposalVoterCount[proposalId]++;
             hasVotedOnProposal[account][proposalId] = true;
         }
 
-        if (support == 0) {
-            metadata.votesAgainst += uint96(weight);
-        } else if (support == 1) {
-            metadata.votesFor += uint96(weight);
-        } else if (support == 2) {
-            metadata.votesAbstain += uint96(weight);
-        }
+        ProposalMetadata storage metadata = proposalMetadata[proposalId];
+        if (support == 0) metadata.votesAgainst += uint96(weight);
+        else if (support == 1) metadata.votesFor += uint96(weight);
+        else metadata.votesAbstain += uint96(weight);
 
         return weight;
-    }
-
-    // These methods are placeholders and would need full implementation
-    function _queueOperations(
-        uint256 /* proposalId */,
-        address[] memory /* targets */,
-        uint256[] memory /* values */,
-        bytes[] memory /* calldatas */,
-        bytes32 /* descriptionHash */
-    ) internal pure override returns (uint48) {
-        // Placeholder implementation
-        return 0;
-    }
-
-    function _executeOperations(
-        uint256 proposalId,
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) internal override {
-        // Placeholder implementation
-    }
-
-    function _cancel(
-        address[] memory /* targets */,
-        uint256[] memory /* values */,
-        bytes[] memory /* calldatas */,
-        bytes32 /* descriptionHash */
-    ) internal pure override returns (uint256) {
-        // Placeholder implementation
-        return 0;
-    }
-
-    function _executor() internal view override returns (address) {
-        return address(this);
-    }
-
-    function proposalNeedsQueuing(uint256 /* proposalId */) public pure override returns (bool) {
-        return true;
-    }
-
-    function supportsInterface(bytes4 /* interfaceId */) public pure override returns (bool) {
-        // Placeholder implementation
-        return true;
     }
 }

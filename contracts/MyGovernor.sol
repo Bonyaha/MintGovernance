@@ -21,15 +21,24 @@ contract MyGovernor is
     AccessControl,
     ReentrancyGuard
 {
+    error InvalidCategory();
+    error InsufficientBalance();
+    error BudgetExceeded();
+    error AlreadyApproved();
+    error OwnProposalApproval();
+
     bytes32 public constant PROPOSAL_REVIEWER_ROLE =
         keccak256("PROPOSAL_REVIEWER_ROLE");
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant TREASURER_ROLE = keccak256("TREASURER_ROLE");
 
     // Treasury state
-    uint256 public treasuryBalance;
-    uint256 public emergencyMinimumBalance;
-    bool public emergencyPaused;
+    struct TreasuryState {
+        uint128 balance;
+        uint128 emergencyMinimumBalance;
+        bool emergencyPaused;
+    }
+    TreasuryState public treasuryState;
 
     // Enhanced delegation tracking
     mapping(address => address[]) public delegationHistory;
@@ -42,17 +51,39 @@ contract MyGovernor is
     // Enhanced proposal tracking
     struct ProposalMetadata {
         string title;
-        string description;
         address proposer;
-        uint256 timestamp;
+        uint40 timestamp;
         string status;
+        string category;
+        uint96 votesFor;
+        uint96 votesAgainst;
+        uint96 votesAbstain;
+        bool isActive;
+    }
+    // Enhanced pagination and filtering support
+    struct ProposalPage {
+        uint256[] proposalIds;
+        ProposalMetadata[] metadata;
+        uint256 totalCount;
+        bool hasMore;
     }
 
     mapping(uint256 => ProposalMetadata) public proposalMetadata;
     mapping(uint256 => bool) public approvedProposals;
     mapping(uint256 => ProposalDetails) public proposalsAwaitingReview;
     mapping(uint256 => uint256) public proposalBudgets;
+    mapping(string => uint256[]) public proposalsByCategory;
+    mapping(address => uint256[]) public userProposals;
+    mapping(uint256 => uint256) public proposalVoterCount;
+    mapping(address => mapping(uint256 => bool)) public hasVotedOnProposal;
     uint256 public totalProposals;
+
+    // Constants for pagination
+    uint256 public constant PROPOSALS_PER_PAGE = 10;
+
+    // Categories for proposals
+    string[] public proposalCategories;
+    mapping(string => bool) public isValidCategory;
 
     struct ProposalDetails {
         address[] targets;
@@ -77,18 +108,23 @@ contract MyGovernor is
         uint256 indexed proposalId,
         address indexed proposer
     );
+    event TreasuryWithdrawal(address indexed to, uint256 amount, string reason);
+    event TreasuryDeposit(address indexed from, uint256 amount);
+    event EmergencyPauseSet(bool isPaused);
     event DelegationChanged(
         address indexed delegator,
         address indexed fromDelegate,
         address indexed toDelegate
     );
-    event TreasuryWithdrawal(address indexed to, uint256 amount, string reason);
-    event TreasuryDeposit(address indexed from, uint256 amount);
-    event EmergencyPauseSet(bool isPaused);
     event QuorumParamsUpdated(
         uint256 baseQuorum,
         uint256 participationMultiplier
     );
+    event ProposalCategoryUpdated(
+        uint256 indexed proposalId,
+        string newCategory
+    );
+    event TreasuryBalanceUpdated(uint256 newBalance);
 
     constructor(
         IVotes _token,
@@ -106,9 +142,126 @@ contract MyGovernor is
         _setRoleAdmin(PROPOSAL_REVIEWER_ROLE, ADMIN_ROLE);
         _setRoleAdmin(TREASURER_ROLE, ADMIN_ROLE);
 
-        baseQuorum = 1000; // 10% base quorum
-        participationMultiplier = 100; // 1x multiplier
-        emergencyMinimumBalance = 1 ether; // Set default emergency minimum
+        baseQuorum = 1000;
+        participationMultiplier = 100;
+        treasuryState.emergencyMinimumBalance = 1 ether;
+
+        // Initialize default categories
+        proposalCategories = ["General", "Treasury", "Protocol", "Community"];
+        for (uint i = 0; i < proposalCategories.length; i++) {
+            isValidCategory[proposalCategories[i]] = true;
+        }
+    }
+
+    // Enhanced view functions for frontend
+    function getProposalsByPage(
+        uint256 page,
+        uint256 pageSize
+    ) external view returns (ProposalPage memory) {
+        uint256 startIndex = page * pageSize;
+        uint256 endIndex = startIndex + pageSize;
+        if (endIndex > totalProposals) {
+            endIndex = totalProposals;
+        }
+
+        uint256[] memory ids = new uint256[](endIndex - startIndex);
+        ProposalMetadata[] memory metas = new ProposalMetadata[](
+            endIndex - startIndex
+        );
+
+        for (uint256 i = startIndex; i < endIndex; i++) {
+            ids[i - startIndex] = i + 1; // Assuming proposal IDs start from 1
+            metas[i - startIndex] = proposalMetadata[ids[i - startIndex]];
+        }
+
+        return
+            ProposalPage({
+                proposalIds: ids,
+                metadata: metas,
+                totalCount: totalProposals,
+                hasMore: endIndex < totalProposals
+            });
+    }
+
+    function getProposalsByCategory(
+        string calldata category,
+        uint256 page
+    ) external view returns (ProposalPage memory) {
+        if (!isValidCategory[category]) revert InvalidCategory();
+        uint256[] storage categoryProposals = proposalsByCategory[category];
+
+        uint256 startIndex = page * PROPOSALS_PER_PAGE;
+        uint256 endIndex = startIndex + PROPOSALS_PER_PAGE;
+        if (endIndex > categoryProposals.length) {
+            endIndex = categoryProposals.length;
+        }
+
+        uint256[] memory ids = new uint256[](endIndex - startIndex);
+        ProposalMetadata[] memory metas = new ProposalMetadata[](
+            endIndex - startIndex
+        );
+
+        for (uint256 i = startIndex; i < endIndex; i++) {
+            ids[i - startIndex] = categoryProposals[i];
+            metas[i - startIndex] = proposalMetadata[categoryProposals[i]];
+        }
+
+        return
+            ProposalPage({
+                proposalIds: ids,
+                metadata: metas,
+                totalCount: categoryProposals.length,
+                hasMore: endIndex < categoryProposals.length
+            });
+    }
+
+    function getUserVotingInfo(
+        address user
+    )
+        external
+        view
+        returns (
+            uint256 votingPower,
+            uint256 delegatedPower,
+            address[] memory delegators,
+            uint256 proposalsVoted
+        )
+    {
+        votingPower = IVotes(token()).getVotes(user);
+        // Count proposals where user has voted
+        uint256 voted = 0;
+        for (uint256 i = 1; i <= totalProposals; i++) {
+            if (hasVotedOnProposal[user][i]) {
+                voted++;
+            }
+        }
+        return (
+            votingPower,
+            0, // Delegated power calculation would need additional tracking
+            new address[](0), // Delegators list would need additional tracking
+            voted
+        );
+    }
+
+    function getProposalVotes(
+        uint256 proposalId
+    )
+        external
+        view
+        returns (
+            uint256 forVotes,
+            uint256 againstVotes,
+            uint256 abstainVotes,
+            uint256 voterCount
+        )
+    {
+        ProposalMetadata storage metadata = proposalMetadata[proposalId];
+        return (
+            metadata.votesFor,
+            metadata.votesAgainst,
+            metadata.votesAbstain,
+            proposalVoterCount[proposalId]
+        );
     }
 
     function addProposalReviewer(
@@ -119,23 +272,25 @@ contract MyGovernor is
 
     // Treasury Management Functions
     receive() external payable override {
-        treasuryBalance += msg.value;
+        treasuryState.balance += uint128(msg.value);
         emit TreasuryDeposit(msg.sender, msg.value);
+        emit TreasuryBalanceUpdated(treasuryState.balance);
     }
 
     function withdrawTreasury(
         address payable to,
         uint256 amount,
-        string memory reason
+        string calldata reason
     ) external onlyRole(TREASURER_ROLE) nonReentrant {
-        require(!emergencyPaused, "Treasury is paused");
-        require(amount <= treasuryBalance, "Insufficient treasury balance");
+        require(!treasuryState.emergencyPaused, "Treasury is paused");
+        if (amount > treasuryState.balance) revert InsufficientBalance();
         require(
-            treasuryBalance - amount >= emergencyMinimumBalance,
+            treasuryState.balance - amount >=
+                treasuryState.emergencyMinimumBalance,
             "Must maintain minimum balance"
         );
 
-        treasuryBalance -= amount;
+        treasuryState.balance -= uint128(amount);
         (bool success, ) = to.call{value: amount}("");
         require(success, "Transfer failed");
 
@@ -143,7 +298,7 @@ contract MyGovernor is
     }
 
     function setEmergencyPause(bool paused) external onlyRole(ADMIN_ROLE) {
-        emergencyPaused = paused;
+        treasuryState.emergencyPaused = paused;
         emit EmergencyPauseSet(paused);
     }
 
@@ -198,13 +353,15 @@ contract MyGovernor is
     // Enhanced Proposal Functions
     function submitProposalForReview(
         string memory title,
+        string memory category,
         address[] memory targets,
         uint256[] memory values,
         bytes[] memory calldatas,
         string memory description,
         uint256 budget
     ) external {
-        require(budget <= treasuryBalance, "Budget exceeds treasury balance");
+        require(isValidCategory[category], "Invalid category");
+        if (budget > treasuryState.balance) revert BudgetExceeded();
 
         uint256 proposalId = hashProposal(
             targets,
@@ -213,32 +370,67 @@ contract MyGovernor is
             keccak256(bytes(description))
         );
 
-        require(
-            !proposalsAwaitingReview[proposalId].exists,
-            "Proposal already submitted"
-        );
-        require(!approvedProposals[proposalId], "Proposal already approved");
-
+        uint40 currentTimestamp = uint40(block.timestamp);
         proposalMetadata[proposalId] = ProposalMetadata({
             title: title,
-            description: description,
             proposer: msg.sender,
-            timestamp: block.timestamp,
-            status: "Under Review"
+            timestamp: currentTimestamp,
+            status: "Under Review",
+            category: category,
+            votesFor: 0,
+            votesAgainst: 0,
+            votesAbstain: 0,
+            isActive: true
         });
 
-        proposalsAwaitingReview[proposalId] = ProposalDetails({
-            targets: targets,
-            values: values,
-            calldatas: calldatas,
-            description: description,
-            proposer: msg.sender,
-            budget: budget,
-            exists: true
-        });
+        proposalsByCategory[category].push(proposalId);
+        userProposals[msg.sender].push(proposalId);
 
-        totalProposals++;
         emit ProposalSubmittedForReview(proposalId, msg.sender);
+        emit ProposalCategoryUpdated(proposalId, category);
+    }
+
+    // Override vote counting to update metadata
+    function _countVote(
+        uint256 proposalId,
+        address account,
+        uint8 support,
+        uint256 weight,
+        bytes memory params
+    )
+        internal
+        virtual
+        override(Governor, GovernorCountingSimple)
+        returns (uint256)
+    {
+        uint256 result = super._countVote(
+            proposalId,
+            account,
+            support,
+            weight,
+            params
+        );
+
+        ProposalMetadata storage metadata = proposalMetadata[proposalId];
+        if (support == 0) {
+            metadata.votesAgainst = uint96(
+                uint256(metadata.votesAgainst) + weight
+            ); // Safe conversion
+        } else if (support == 1) {
+            metadata.votesFor = uint96(uint256(metadata.votesFor) + weight); // Safe conversion
+        } else if (support == 2) {
+            metadata.votesAbstain = uint96(
+                uint256(metadata.votesAbstain) + weight
+            ); // Safe conversion
+        }
+
+        if (!hasVotedOnProposal[account][proposalId]) {
+            hasVotedOnProposal[account][proposalId] = true;
+            proposalVoterCount[proposalId]++;
+        }
+
+        emit VoteCast(account, proposalId, support, weight, "");
+        return result;
     }
 
     function approveProposal(
@@ -248,11 +440,9 @@ contract MyGovernor is
             proposalsAwaitingReview[proposalId].exists,
             "Proposal not found"
         );
-        require(!approvedProposals[proposalId], "Already approved");
-        require(
-            proposalsAwaitingReview[proposalId].proposer != msg.sender,
-            "Cannot approve own proposal"
-        );
+        if (approvedProposals[proposalId]) revert AlreadyApproved();
+        if (proposalsAwaitingReview[proposalId].proposer == msg.sender)
+            revert OwnProposalApproval();
 
         approvedProposals[proposalId] = true;
         proposalBudgets[proposalId] = proposalsAwaitingReview[proposalId]
@@ -304,12 +494,12 @@ contract MyGovernor is
 
     // Check if address has voted on proposal
     // Fix the override for hasVoted by specifying all parent contracts
-function hasVoted(
-    uint256 proposalId,
-    address account
-) public view override(IGovernor, GovernorCountingSimple) returns (bool) {
-    return super.hasVoted(proposalId, account);
-}
+    function hasVoted(
+        uint256 proposalId,
+        address account
+    ) public view override(IGovernor, GovernorCountingSimple) returns (bool) {
+        return super.hasVoted(proposalId, account);
+    }
 
     // Required overrides
     function quorum(

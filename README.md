@@ -1,5 +1,6 @@
 # ERC20 Governor Project
-#### this branch has following additions: faucet-like token claiming system, easy voting power checking, better proposal metadata tracking, proposal titles and descriptions, voter eligibility checking, active proposal listing
+size is over the limit
+#### this branch has following additions: added new events for real-time updates,improved Data Structures,new View Functions,frontend Support Features, added mappings for filtered access
 This repository contains a governance system built with OpenZeppelin's Governor contracts. Below are instructions for deploying, testing, and interacting with the governance system.
 
 In this repository, you'll find two contracts:

@@ -24,7 +24,7 @@ abstract contract MyGovernorBase is
     // Error definitions
     error InvalidCategory();
     error InsufficientBalance();
-    error BudgetExceeded();
+    
     error AlreadyApproved();
     error OwnProposalApproval();
 
